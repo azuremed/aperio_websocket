@@ -6,7 +6,7 @@ const path = require('path');
 require('dotenv').config(); 
 
 // Configuração do servidor
-const PORT = 30042; // Substitua pela porta desejada
+const PORT = process.env.WEBSOCKET_PORT; // Substitua pela porta desejada
 const HOST = '127.0.0.1'; // Substitua pelo IP desejado, use '0.0.0.0' para escutar em todas as interfaces
 
 // Configuração dos logs

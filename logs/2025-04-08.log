@@ -1,8 +1,0 @@
-[2025-04-08T11:40:29.049Z] Mensagem recebida: MSH|^~\&|ESM||LIS||20240816115408871||OUL^R21|97e24704-672c-4abe-89f2-829faa6e8eb7|P|2.5.1
-ORC|RE
-OBR||||01332467610
-OBX|1|ST|URL|SLIDE|https://patologiadigital.com.br/view/v2/LApi.Slide/1800179333010B||||||F
-OBX|3|ST|DATE|SCANNED|20240816114404000||||||F
-OBX|4|ST|MAG|SCAN|40||||||F
-OBX|5|ST|SCANSCOPEID||SS12175||||||F
-[2025-04-08T11:40:29.131Z] Resposta da API: [{"psv_cod":2134,"osm_serie":113,"osm_num":32,"smm_num":1,"smm_cod_amostra":"01332467610","pac_reg":288}]

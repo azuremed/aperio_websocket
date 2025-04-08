@@ -7,7 +7,7 @@ const message = `MSH|^~\\&|ESM||LIS||20240816115408871||OUL^R21|97e24704-672c-4a
 
 const options = {
   host: '127.0.0.1',
-  port: 12345
+  port: process.env.WEBSOCKET_PORT
 };
 
 
