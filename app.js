@@ -71,6 +71,7 @@ const server = net.createServer((socket) => {
 
   // Evento ao receber dados do cliente
   socket.on('data', (data) => {
+    logMessage(`Mensagem recebida: ${data}`); // Grava no log a mensagem recebida
     const receivedMessage = data.toString();
     logMessage(`Mensagem recebida: ${receivedMessage}`); // Grava no log a mensagem recebida
 
@@ -92,7 +93,7 @@ const server = net.createServer((socket) => {
     //Capturando o ID da amostra
     let obr = hl7.get('OBR.4');
 
-    axios.get(`http://localhost:3002/amostra/${obr}`)
+    axios.get(`http://localhost:3001/amostra/${obr}`)
     .then((response) => {
         logMessage(`Resposta da API: ${JSON.stringify(response.data)}`); // Log da resposta da API
         console.log(response.data); // Exibe o objeto JSON
