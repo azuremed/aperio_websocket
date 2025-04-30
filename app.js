@@ -1,4 +1,3 @@
-const HL7 = require('hl7-standard/src/api');
 const net = require('net');
 const axios = require('axios');
 const fs = require('fs');
@@ -71,42 +70,67 @@ const server = net.createServer((socket) => {
 
   // Evento ao receber dados do cliente
   socket.on('data', (data) => {
-    logMessage(`Mensagem recebida: ${data}`); // Grava no log a mensagem recebida
-    const receivedMessage = data.toString();
-    logMessage(`Mensagem recebida: ${receivedMessage}`); // Grava no log a mensagem recebida
+    const receivedData = data.toString(); // Converte o buffer para string
+    logMessage(`Dados brutos recebidos: ${receivedData}`); // Log dos dados brutos
 
-    console.log('Mensagem recebida:');
+    // Normaliza as quebras de linha para '\n' e divide as mensagens
+    const messages = receivedData.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     
-    // Transforma a mensagem HL7
-    let hl7 = new HL7(receivedMessage, {
-        fieldSeparator: '|',
-        componentSeparator: '^',
-        repetitionSeparator: '~',
-        escapeCharacter: '\\',
-        subcomponentSeparator: '&',
-        lineEnding: '\r',
+    let hl7Message = null;
+
+    // Processa cada mensagem separadamente
+
+    messages.forEach((message) => {
+        if (message.trim()) { // Ignora mensagens vazias
+            logMessage(`Mensagem recebida: ${message}`);
+            if (hl7Message == null){
+              message = message.replace(/[\x0B]/g, '');
+              hl7Message = message;
+            }
+            else
+              hl7Message = hl7Message + '\n' + message; // Concatena corretamente usando '\r'
+        }
     });
-    hl7.transform();
+    
+    console.log(hl7Message); // Exibe a mensagem HL7 completa no console
 
-    console.log('HL7 transformado');
-
-    //Capturando o ID da amostra
-    let obr = hl7.get('OBR.4');
-
-    axios.get(`http://localhost:3001/amostra/${obr}`)
-    .then((response) => {
+    axios.post(`http://localhost:3001/receive-hl7`, { hl7Message })
+      .then((response) => {
         logMessage(`Resposta da API: ${JSON.stringify(response.data)}`); // Log da resposta da API
-        console.log(response.data); // Exibe o objeto JSON
-    })
-    .catch((error) => {
+        const hl7Response = response.data.hl7; // Captura o valor de response.data.hl7
+        const START = String.fromCharCode(0x0B);  // VT / STX
+        const END = String.fromCharCode(0x1C);    // FS / ETX
+        const CR = String.fromCharCode(0x0D);     // Carriage Return
+
+        const fullMessage = START + hl7Response + END + CR;
+        console.log('Mensagem formatada para envio:', fullMessage);
+
+        // Enviar para o socket
+        socket.write(fullMessage, () => {
+          console.log('Mensagem enviada ao Mirth com sucesso.');
+          socket.end(); // Encerra a conexão após o envio
+        });
+
+        socket.on('data', (data) => {
+          console.log('Resposta do Mirth:', data.toString());
+          socket.end(); // Fecha o socket após receber a resposta
+        });
+
+        socket.on('timeout', () => {
+          console.error('O socket atingiu o tempo limite.');
+          socket.destroy(); // Destrói o socket em caso de timeout
+        });
+
+        socket.on('error', (err) => {
+          console.error('Erro no socket:', err.message);
+          socket.destroy(); // Destrói o socket em caso de erro
+        });
+      })
+      .catch((error) => {
         logMessage(`Erro na requisição: ${error.message}`); // Log do erro da API
         console.error('Erro na requisição:', error.message);
-    });
-    
-    // Envia uma resposta ao cliente
-    socket.write(responseMessage);
-    console.log('Resposta enviada ao cliente');
-
+        socket.write('Erro ao processar a mensagem', () => socket.end()); // Envia erro ao cliente e encerra
+      });
   });
 
   // Evento ao encerrar a conexão
