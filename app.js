@@ -1,25 +1,26 @@
 const net = require('net');
-const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config(); 
+require('dotenv').config();
+const HL7 = require('hl7-standard');
+const { format } = require('date-fns');
+const { randomUUID } = require('crypto');
 
-// Configuração do servidor
-const PORT = process.env.WEBSOCKET_PORT; // Substitua pela porta desejada
-const HOST = '0.0.0.0'; // Substitua pelo IP desejado, use '0.0.0.0' para escutar em todas as interfaces
+const PORT = process.env.WEBSOCKET_PORT || 3000;
+const DOMAIN = process.env.DOMAIN;
+const TOKEN = process.env.TOKEN;
+const HOST = '0.0.0.0';
 
-// Configuração dos logs
 const logDir = path.join(__dirname, 'logs');
 if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir);
 }
 
-// Função para registrar logs
 const logMessage = (message) => {
   const timestamp = new Date().toISOString();
-  const logFileName = path.join(logDir, `${timestamp.slice(0, 10)}.log`); // Nome do arquivo baseado na data
+  const logFileName = path.join(logDir, `${timestamp.slice(0, 10)}.log`);
   const logEntry = `[${timestamp}] ${message}\n`;
-  
+
   fs.appendFile(logFileName, logEntry, (err) => {
     if (err) {
       console.error('Erro ao gravar no arquivo de log:', err.message);
@@ -27,7 +28,6 @@ const logMessage = (message) => {
   });
 };
 
-// Função para limpar logs mais antigos que 7 dias
 const cleanOldLogs = () => {
   fs.readdir(logDir, (err, files) => {
     if (err) {
@@ -59,94 +59,182 @@ const cleanOldLogs = () => {
   });
 };
 
-// Resposta que o servidor enviará
-const responseMessage = `
-ACK|MSH|Message received successfully
-`;
+async function fetchAndBuildHL7(hl7Message) {
+    const now = new Date();
+    const formattedDate = format(now, 'yyyyMMddHHmmss');
 
-// Cria um servidor TCP
-const server = net.createServer((socket) => {
-  console.log('Cliente conectado:', socket.remoteAddress, socket.remotePort);
-
-  // Evento ao receber dados do cliente
-  socket.on('data', (data) => {
-    const receivedData = data.toString(); // Converte o buffer para string
-    logMessage(`Dados brutos recebidos: ${receivedData}`); // Log dos dados brutos
-
-    // Normaliza as quebras de linha para '\n' e divide as mensagens
-    const messages = receivedData.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    
-    let hl7Message = null;
-
-    // Processa cada mensagem separadamente
-
-    messages.forEach((message) => {
-        if (message.trim()) { // Ignora mensagens vazias
-            logMessage(`Mensagem recebida: ${message}`);
-            if (hl7Message == null){
-              message = message.replace(/[\x0B]/g, '');
-              hl7Message = message;
-            }
-            else
-              hl7Message = hl7Message + '\n' + message; // Concatena corretamente usando '\r'
-        }
+    let hl7 = new HL7(hl7Message, {
+      fieldSeparator: '|',
+      componentSeparator: '^',
+      repetitionSeparator: '~',
+      escapeCharacter: '\\',
+      subcomponentSeparator: '&',
+      lineEnding: '\r',
     });
+    hl7.transform();
+
+    logMessage('HL7 transformado com sucesso');
+
+    let id_amostra = hl7.get('OBR.4');
+    logMessage(`ID da amostra capturado: ${id_amostra}`);
+
+    logMessage(`Buscando dados para amostra: ${id_amostra}`);
+    const domain = DOMAIN;
+    const token = TOKEN;
+    const url = `http://localhost:8000/api/aperio/consulta/${domain}/${token}/${id_amostra}`;
+
+    logMessage(`Requisitando o endpoint: ${url}`);
+    console.log(`Requisitando o endpoint: ${url}`);
+
+    const response = await fetch(url);
+    const result = await response.json();
+    logMessage(`Resposta do servidor:`);
+    logMessage(result);
+    console.log(`Resposta do servidor:`);
+    console.log(result);
     
-    console.log(hl7Message); // Exibe a mensagem HL7 completa no console
+    if (!response.ok) {
+      throw new Error(`Erro na requisição: ${response.status} - ${response.statusText}`);
+    }
 
-    axios.post(`http://localhost:3001/receive-hl7`, { hl7Message })
-      .then((response) => {
-        logMessage(`Resposta da API: ${JSON.stringify(response.data)}`); // Log da resposta da API
-        const hl7Response = response.data.hl7; // Captura o valor de response.data.hl7
-        const START = String.fromCharCode(0x0B);  // VT / STX
-        const END = String.fromCharCode(0x1C);    // FS / ETX
-        const CR = String.fromCharCode(0x0D);     // Carriage Return
+    let record = result;
 
-        const fullMessage = START + hl7Response + END + CR;
-        console.log('Mensagem formatada para envio:', fullMessage);
+    if (!record) {
+      throw new Error('Nenhum registro encontrado para o ID fornecido.');
+    }
 
-        // Enviar para o socket
-        socket.write(fullMessage, () => {
-          console.log('Mensagem enviada ao Mirth com sucesso.');
-          socket.end(); // Encerra a conexão após o envio
-        });
+    logMessage('Dados recuperados com sucesso!');
 
-        socket.on('data', (data) => {
-          console.log('Resposta do Mirth:', data.toString());
-          socket.end(); // Fecha o socket após receber a resposta
-        });
+    let patientName = record.pac_nome?.trim() ?? '';
+    let patientNameSplited = patientName.split(' ');
 
-        socket.on('timeout', () => {
-          console.error('O socket atingiu o tempo limite.');
-          socket.destroy(); // Destrói o socket em caso de timeout
-        });
+    let doctorName = record.psv_nome?.trim() ?? '';
+    let doctorNameSplited = doctorName.split(' ');
 
-        socket.on('error', (err) => {
-          console.error('Erro no socket:', err.message);
-          socket.destroy(); // Destrói o socket em caso de erro
-        });
-      })
-      .catch((error) => {
-        logMessage(`Erro na requisição: ${error.message}`); // Log do erro da API
-        console.error('Erro na requisição:', error.message);
-        socket.write('Erro ao processar a mensagem', () => socket.end()); // Envia erro ao cliente e encerra
+    let doctorCRM = (record.psv_uf || '') + (record.psv_crm || '');
+
+    let patientGender = record.pac_sexo ?? 'U';
+
+    for (let segment of hl7.getSegments()) {
+      if (['ORC', 'OBR', 'OBX', 'PID', 'PV1', 'SAC', 'SPM'].includes(segment.type)) {
+        hl7.deleteSegment(segment);
+      }
+    }
+    logMessage('Segmentos deletados');
+
+    hl7.set('MSH.7.1', formattedDate);
+    hl7.set('MSH.9.1', 'OML');
+    hl7.set('MSH.9.2', 'O21');
+    hl7.set('MSH.10', randomUUID());
+
+    hl7.createSegment('PID');
+    hl7.createSegment('PV1');
+    hl7.createSegment('ORC');
+    hl7.createSegment('SAC');
+    hl7.createSegment('SPM');
+    hl7.createSegment('OBR');
+
+    hl7.set('PID.3.1', record.pac_reg?.toString() ?? '');
+    hl7.set('PID.5.1', patientNameSplited[patientNameSplited.length - 1] ?? '');
+    hl7.set('PID.5.2', patientNameSplited[0] ?? '');
+    hl7.set('PID.7', record.pac_nasc ? format(new Date(record.pac_nasc), 'yyyyMMdd') : '');
+    hl7.set('PID.8', patientGender);
+    hl7.set('PID.23', 'U');
+
+    hl7.set('PV1.7.1', doctorCRM ?? '');
+    hl7.set('PV1.7.2', doctorNameSplited[doctorNameSplited.length - 1] ?? '');
+    hl7.set('PV1.7.3', doctorNameSplited[0] ?? '');
+    hl7.set('PV1.7.6', 'Dr');
+
+    hl7.set('ORC.1', 'NW');
+
+    hl7.set('SAC.1', record.smm_cod_amostra?.toString() ?? '');
+
+    hl7.set('SPM.2.1', record.smm_cod_amostra?.toString() ?? '');
+    hl7.set('SPM.17.1', record.smm_dthr_coleta ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss') : '');
+    hl7.set('SPM.18.1', record.smm_dthr_coleta ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss') : '');
+
+    hl7.set('OBR.1', 1);
+    hl7.set('OBR.4', record.smm_cod_amostra?.toString() ?? '');
+
+    let responseHl7 = await hl7.build();
+    logMessage('HL7 montado com sucesso');
+    return responseHl7;
+
+    // logMessage(`Erro ao processar HL7: ${err.message}`);
+    // console.error('Erro ao processar ou transformar a mensagem HL7:', err);
+    // // throw new Error(`Erro ao processar HL7: ${err.message}`);
+
+}
+
+const server = net.createServer((socket) => {
+  const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
+  console.log('Cliente conectado:', clientInfo);
+  logMessage(`Cliente conectado: ${clientInfo}`);
+
+  socket.on('data', async (data) => {
+    try {
+      const receivedData = data.toString();
+      logMessage(`Dados brutos recebidos: ${receivedData}`);
+
+      const messages = receivedData.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+      let hl7Message = null;
+
+      messages.forEach((message) => {
+        if (message.trim()) {
+          logMessage(`Mensagem recebida: ${message}`);
+          if (hl7Message == null) {
+            message = message.replace(/[\x0B]/g, '');
+            hl7Message = message;
+          } else {
+            hl7Message = hl7Message + '\n' + message;
+          }
+        }
       });
+
+      console.log('Mensagem HL7 recebida:', hl7Message);
+      logMessage(`Mensagem HL7 completa: ${hl7Message}`);
+
+      const hl7Response = await fetchAndBuildHL7(hl7Message);
+
+      logMessage(`HL7 processado com sucesso`);
+
+      const START = String.fromCharCode(0x0B);
+      const END = String.fromCharCode(0x1C);
+      const CR = String.fromCharCode(0x0D);
+
+      const fullMessage = START + hl7Response + END + CR;
+      console.log('Mensagem formatada para envio:', fullMessage);
+      logMessage(`Mensagem enviada ao cliente: ${fullMessage}`);
+
+      socket.write(fullMessage, () => {
+        console.log('Mensagem enviada ao Mirth com sucesso.');
+        logMessage('Mensagem enviada ao Mirth com sucesso.');
+        socket.end();
+      });
+
+    } catch (error) {
+      logMessage(`Erro no processamento: ${error.message}`);
+      console.error('Erro no processamento:', error.message);
+      socket.write('Erro ao processar a mensagem', () => socket.end());
+    }
   });
 
-  // Evento ao encerrar a conexão
   socket.on('end', () => {
-    console.log('Cliente desconectado');
+    console.log('Cliente desconectado:', clientInfo);
+    logMessage(`Cliente desconectado: ${clientInfo}`);
   });
 
-  // Evento ao detectar erros na conexão
   socket.on('error', (err) => {
     console.error('Erro na conexão:', err.message);
+    logMessage(`Erro na conexão: ${err.message}`);
   });
 });
 
-// Inicia o servidor e configura limpeza periódica de logs
 server.listen(PORT, HOST, () => {
   console.log(`Servidor TCP rodando em ${HOST}:${PORT}`);
-  cleanOldLogs(); // Limpa logs antigos ao iniciar
-  setInterval(cleanOldLogs, 24 * 60 * 60 * 1000); // Agendamento diário para limpar logs
+  logMessage(`Servidor TCP iniciado em ${HOST}:${PORT}`);
+  cleanOldLogs();
+  setInterval(cleanOldLogs, 24 * 60 * 60 * 1000);
 });
