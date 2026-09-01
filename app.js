@@ -11,9 +11,14 @@ const DOMAIN = process.env.DOMAIN;
 const TOKEN = process.env.TOKEN;
 const HOST = '0.0.0.0';
 
-const logDir = path.join(__dirname, 'logs');
+const appDir = process.pkg
+  ? path.dirname(process.execPath)
+  : __dirname;
+
+const logDir = path.join(appDir, 'logs');
+
 if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir);
+  fs.mkdirSync(logDir, { recursive: true });
 }
 
 const logMessage = (message) => {
@@ -36,19 +41,29 @@ const cleanOldLogs = () => {
     }
 
     const now = Date.now();
+
     files.forEach((file) => {
       const filePath = path.join(logDir, file);
+
       fs.stat(filePath, (err, stats) => {
         if (err) {
-          console.error('Erro ao obter informações do arquivo:', err.message);
+          console.error(
+            'Erro ao obter informações do arquivo:',
+            err.message
+          );
           return;
         }
 
-        const fileAgeInDays = (now - stats.mtime.getTime()) / (1000 * 60 * 60 * 24);
+        const fileAgeInDays =
+          (now - stats.mtime.getTime()) / (1000 * 60 * 60 * 24);
+
         if (fileAgeInDays > 7) {
           fs.unlink(filePath, (err) => {
             if (err) {
-              console.error('Erro ao excluir log antigo:', err.message);
+              console.error(
+                'Erro ao excluir log antigo:',
+                err.message
+              );
             } else {
               console.log(`Log antigo removido: ${file}`);
             }
@@ -59,182 +74,754 @@ const cleanOldLogs = () => {
   });
 };
 
+
+/**
+ * ============================================================
+ * PROCESSAMENTO DO HL7
+ * ============================================================
+ */
+
 async function fetchAndBuildHL7(hl7Message) {
-    const now = new Date();
-    const formattedDate = format(now, 'yyyyMMddHHmmss');
+  const now = new Date();
+  const formattedDate = format(now, 'yyyyMMddHHmmss');
 
-    let hl7 = new HL7(hl7Message, {
-      fieldSeparator: '|',
-      componentSeparator: '^',
-      repetitionSeparator: '~',
-      escapeCharacter: '\\',
-      subcomponentSeparator: '&',
-      lineEnding: '\r',
-    });
-    hl7.transform();
+  let hl7 = new HL7(hl7Message, {
+    fieldSeparator: '|',
+    componentSeparator: '^',
+    repetitionSeparator: '~',
+    escapeCharacter: '\\',
+    subcomponentSeparator: '&',
+    lineEnding: '\r',
+  });
 
-    logMessage('HL7 transformado com sucesso');
+  hl7.transform();
 
-    let id_amostra = hl7.get('OBR.4');
-    logMessage(`ID da amostra capturado: ${id_amostra}`);
+  logMessage('HL7 transformado com sucesso');
 
-    logMessage(`Buscando dados para amostra: ${id_amostra}`);
-    const domain = DOMAIN;
-    const token = TOKEN;
-    const url = `http://localhost:8000/api/aperio/consulta/${domain}/${token}/${id_amostra}`;
+  let id_amostra = hl7.get('OBR.4');
 
-    logMessage(`Requisitando o endpoint: ${url}`);
-    console.log(`Requisitando o endpoint: ${url}`);
+  logMessage(`ID da amostra capturado: ${id_amostra}`);
 
-    const response = await fetch(url);
-    const result = await response.json();
-    logMessage(`Resposta do servidor:`);
-    logMessage(result);
-    console.log(`Resposta do servidor:`);
-    console.log(result);
-    
-    if (!response.ok) {
-      throw new Error(`Erro na requisição: ${response.status} - ${response.statusText}`);
+  logMessage(`Buscando dados para amostra: ${id_amostra}`);
+
+  const domain = DOMAIN;
+  const token = TOKEN;
+
+  const url =
+    `https://api-externa.klingo.app/api/aperio/consulta/` +
+    `${domain}/${token}/${id_amostra}`;
+
+  logMessage(`Requisitando o endpoint: ${url}`);
+  console.log(`Requisitando o endpoint: ${url}`);
+
+  const response = await fetch(url);
+  const responseText = await response.text();
+
+
+  if (!response.ok) {
+    logMessage(
+      `API retornou erro: ${response.status} - ${response.statusText}`
+    );
+
+    return {
+      success: false,
+      error: `Erro na API externa: ${response.status} - ${response.statusText}`
+    };
+  }
+
+  logMessage(`Status da resposta: ${response.status}`);
+  logMessage(`Conteúdo bruto recebido: ${responseText}`);
+
+  console.log(`Conteúdo bruto recebido: ${responseText}`);
+
+  const result = JSON.parse(responseText);
+  const record = result;
+
+  if (!record) {
+    return {
+      success: false,
+      error: 'Nenhum registro encontrado para o ID fornecido.'
+    };
+  }
+
+  logMessage('Dados recuperados com sucesso!');
+
+  const patientName = record.pac_nome?.trim() ?? '';
+  const patientNameSplited = patientName.split(' ');
+
+  const doctorName = record.psv_nome?.trim() ?? '';
+  const doctorNameSplited = doctorName.split(' ');
+
+  const doctorCRM =
+    (record.psv_uf || '') +
+    (record.psv_crm || '');
+
+  const patientGender = record.pac_sexo ?? 'U';
+
+  for (const segment of hl7.getSegments()) {
+    if (
+      [
+        'ORC',
+        'OBR',
+        'OBX',
+        'PID',
+        'PV1',
+        'SAC',
+        'SPM'
+      ].includes(segment.type)
+    ) {
+      hl7.deleteSegment(segment);
     }
+  }
 
-    let record = result;
+  logMessage('Segmentos deletados');
 
-    if (!record) {
-      throw new Error('Nenhum registro encontrado para o ID fornecido.');
-    }
+  hl7.set('MSH.7.1', formattedDate);
+  hl7.set('MSH.9.1', 'OML');
+  hl7.set('MSH.9.2', 'O21');
+  hl7.set('MSH.10', randomUUID());
 
-    logMessage('Dados recuperados com sucesso!');
+  hl7.createSegment('PID');
+  hl7.createSegment('PV1');
+  hl7.createSegment('ORC');
+  hl7.createSegment('SAC');
+  hl7.createSegment('SPM');
+  hl7.createSegment('OBR');
 
-    let patientName = record.pac_nome?.trim() ?? '';
-    let patientNameSplited = patientName.split(' ');
+  hl7.set(
+    'PID.3.1',
+    record.pac_reg?.toString() ?? ''
+  );
 
-    let doctorName = record.psv_nome?.trim() ?? '';
-    let doctorNameSplited = doctorName.split(' ');
+  hl7.set(
+    'PID.5.1',
+    patientNameSplited[patientNameSplited.length - 1] ?? ''
+  );
 
-    let doctorCRM = (record.psv_uf || '') + (record.psv_crm || '');
+  hl7.set(
+    'PID.5.2',
+    patientNameSplited[0] ?? ''
+  );
 
-    let patientGender = record.pac_sexo ?? 'U';
+  hl7.set(
+    'PID.7',
+    record.pac_nasc
+      ? format(new Date(record.pac_nasc), 'yyyyMMdd')
+      : ''
+  );
 
-    for (let segment of hl7.getSegments()) {
-      if (['ORC', 'OBR', 'OBX', 'PID', 'PV1', 'SAC', 'SPM'].includes(segment.type)) {
-        hl7.deleteSegment(segment);
-      }
-    }
-    logMessage('Segmentos deletados');
+  hl7.set('PID.8', patientGender);
+  hl7.set('PID.23', 'U');
 
-    hl7.set('MSH.7.1', formattedDate);
-    hl7.set('MSH.9.1', 'OML');
-    hl7.set('MSH.9.2', 'O21');
-    hl7.set('MSH.10', randomUUID());
+  hl7.set('PV1.7.1', doctorCRM ?? '');
 
-    hl7.createSegment('PID');
-    hl7.createSegment('PV1');
-    hl7.createSegment('ORC');
-    hl7.createSegment('SAC');
-    hl7.createSegment('SPM');
-    hl7.createSegment('OBR');
+  hl7.set(
+    'PV1.7.2',
+    doctorNameSplited[doctorNameSplited.length - 1] ?? ''
+  );
 
-    hl7.set('PID.3.1', record.pac_reg?.toString() ?? '');
-    hl7.set('PID.5.1', patientNameSplited[patientNameSplited.length - 1] ?? '');
-    hl7.set('PID.5.2', patientNameSplited[0] ?? '');
-    hl7.set('PID.7', record.pac_nasc ? format(new Date(record.pac_nasc), 'yyyyMMdd') : '');
-    hl7.set('PID.8', patientGender);
-    hl7.set('PID.23', 'U');
+  hl7.set(
+    'PV1.7.3',
+    doctorNameSplited[0] ?? ''
+  );
 
-    hl7.set('PV1.7.1', doctorCRM ?? '');
-    hl7.set('PV1.7.2', doctorNameSplited[doctorNameSplited.length - 1] ?? '');
-    hl7.set('PV1.7.3', doctorNameSplited[0] ?? '');
-    hl7.set('PV1.7.6', 'Dr');
+  hl7.set('PV1.7.6', 'Dr');
 
-    hl7.set('ORC.1', 'NW');
+  hl7.set('ORC.1', 'NW');
 
-    hl7.set('SAC.1', record.smm_cod_amostra?.toString() ?? '');
+  hl7.set(
+    'SAC.1',
+    record.smm_cod_amostra?.toString() ?? ''
+  );
 
-    hl7.set('SPM.2.1', record.smm_cod_amostra?.toString() ?? '');
-    hl7.set('SPM.17.1', record.smm_dthr_coleta ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss') : '');
-    hl7.set('SPM.18.1', record.smm_dthr_coleta ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss') : '');
+  hl7.set(
+    'SPM.2.1',
+    record.smm_cod_amostra?.toString() ?? ''
+  );
 
-    hl7.set('OBR.1', 1);
-    hl7.set('OBR.4', record.smm_cod_amostra?.toString() ?? '');
+  hl7.set(
+    'SPM.17.1',
+    record.smm_dthr_coleta
+      ? format(
+        new Date(record.smm_dthr_coleta),
+        'yyyyMMddHHmmss'
+      )
+      : ''
+  );
 
-    let responseHl7 = await hl7.build();
-    logMessage('HL7 montado com sucesso');
-    return responseHl7;
+  hl7.set(
+    'SPM.18.1',
+    record.smm_dthr_coleta
+      ? format(
+        new Date(record.smm_dthr_coleta),
+        'yyyyMMddHHmmss'
+      )
+      : ''
+  );
 
-    // logMessage(`Erro ao processar HL7: ${err.message}`);
-    // console.error('Erro ao processar ou transformar a mensagem HL7:', err);
-    // // throw new Error(`Erro ao processar HL7: ${err.message}`);
+  hl7.set('OBR.1', 1);
 
+  hl7.set(
+    'OBR.4',
+    record.smm_cod_amostra?.toString() ?? ''
+  );
+
+  const responseHl7 = await hl7.build();
+
+  logMessage('HL7 montado com sucesso');
+
+  return responseHl7;
 }
 
-const server = net.createServer((socket) => {
-  const clientInfo = `${socket.remoteAddress}:${socket.remotePort}`;
-  console.log('Cliente conectado:', clientInfo);
-  logMessage(`Cliente conectado: ${clientInfo}`);
 
-  socket.on('data', async (data) => {
+/**
+ * ============================================================
+ * CRIA ACK DE ERRO
+ * ============================================================
+ */
+
+function buildErrorResponse(error) {
+  const START = String.fromCharCode(0x0B);
+  const END = String.fromCharCode(0x1C);
+  const CR = String.fromCharCode(0x0D);
+
+  const errorResponse =
+    `MSH|^~\\&|LEICA|CH||${format(
+      new Date(),
+      'yyyyMMddHHmmss'
+    )}||ACK^021|${randomUUID()}|P|2.5.1\r` +
+    `MSA|AE||${error.message}\r`;
+
+  return START + errorResponse + END + CR;
+}
+
+
+/**
+ * ============================================================
+ * ENVIA RESPOSTA - CORRIGIDO PARA NÃO FECHAR O SOCKET
+ * ============================================================
+ */
+
+function sendResponse(socket, message) {
+  return new Promise((resolve, reject) => {
+    if (socket.destroyed) {
+      return reject(new Error('Socket já foi encerrado.'));
+    }
+
+    // IMPORTANTE: Não chamar socket.end() ou socket.destroy() aqui
+    socket.write(message, (error) => {
+      if (error) {
+        logMessage(`Erro ao escrever no socket: ${error.message}`);
+        reject(error);
+        return;
+      }
+      
+      logMessage('Resposta enviada com sucesso');
+      resolve();
+    });
+  });
+}
+
+
+/**
+ * ============================================================
+ * PROCESSA UMA MENSAGEM HL7
+ * ============================================================
+ */
+
+async function processHL7Message(socket, hl7Message, clientInfo) {
+  try {
+    logMessage(
+      `Processando mensagem HL7 do cliente ${clientInfo}`
+    );
+
+    console.log(
+      'Mensagem HL7 recebida:',
+      hl7Message
+    );
+
+    logMessage(
+      `Mensagem HL7 completa: ${hl7Message}`
+    );
+
+    const hl7Response =
+      await fetchAndBuildHL7(hl7Message);
+
+    logMessage(
+      'HL7 processado com sucesso'
+    );
+
+    const START = String.fromCharCode(0x0B);
+    const END = String.fromCharCode(0x1C);
+    const CR = String.fromCharCode(0x0D);
+
+    const fullMessage =
+      START +
+      hl7Response +
+      END +
+      CR;
+
+    console.log(
+      'Mensagem formatada para envio:',
+      fullMessage
+    );
+
+    logMessage(
+      `Mensagem enviada ao cliente: ${fullMessage}`
+    );
+
+    await sendResponse(socket, fullMessage);
+
+    console.log(
+      'Mensagem enviada ao Mirth com sucesso.'
+    );
+
+    logMessage(
+      'Mensagem enviada ao Mirth com sucesso.'
+    );
+
+    // IMPORTANTE: Não fechar o socket aqui
+    // A conexão permanece aberta para próximas mensagens
+
+  } catch (error) {
+    logMessage(
+      `Erro no processamento: ${error.message}`
+    );
+
+    console.error(
+      'Erro no processamento:',
+      error.message
+    );
+
     try {
-      const receivedData = data.toString();
-      logMessage(`Dados brutos recebidos: ${receivedData}`);
+      const fullErrorMessage =
+        buildErrorResponse(error);
 
-      const messages = receivedData.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      await sendResponse(
+        socket,
+        fullErrorMessage
+      );
 
-      let hl7Message = null;
+      logMessage(
+        'Resposta de erro enviada ao Mirth.'
+      );
 
-      messages.forEach((message) => {
-        if (message.trim()) {
-          logMessage(`Mensagem recebida: ${message}`);
-          if (hl7Message == null) {
-            message = message.replace(/[\x0B]/g, '');
-            hl7Message = message;
-          } else {
-            hl7Message = hl7Message + '\n' + message;
-          }
-        }
-      });
+      // IMPORTANTE: Não fechar o socket aqui também
+      // Mesmo em erro, mantemos a conexão aberta
 
-      console.log('Mensagem HL7 recebida:', hl7Message);
-      logMessage(`Mensagem HL7 completa: ${hl7Message}`);
+    } catch (sendError) {
+      logMessage(
+        `Erro ao enviar resposta de erro: ${sendError.message}`
+      );
+      console.error('Erro ao enviar resposta de erro:', sendError);
+    }
+  }
+}
 
-      const hl7Response = await fetchAndBuildHL7(hl7Message);
 
-      logMessage(`HL7 processado com sucesso`);
+/**
+ * ============================================================
+ * SERVIDOR TCP / MLLP - CORRIGIDO
+ * ============================================================
+ */
 
+const server = net.createServer((socket) => {
+  
+  // ============================================================
+  // CONFIGURAÇÕES CRÍTICAS PARA MANTER A CONEXÃO ABERTA
+  // ============================================================
+  
+  // Mantém a conexão ativa mesmo com inatividade
+  socket.setKeepAlive(true, 30000); // 30 segundos de keepalive
+  
+  // Desabilita timeout automático do socket
+  socket.setTimeout(0);
+  
+  // ============================================================
+  // FIM DAS CONFIGURAÇÕES
+  // ============================================================
+
+  const clientInfo =
+    `${socket.remoteAddress}:${socket.remotePort}`;
+
+  console.log(
+    'Cliente conectado:',
+    clientInfo
+  );
+
+  logMessage(
+    `Cliente conectado: ${clientInfo}`
+  );
+
+  // DEBUG: Monitorar quando o socket é destruído
+  const originalDestroy = socket.destroy.bind(socket);
+  socket.destroy = function(...args) {
+    logMessage(`⚠️ Socket sendo destruído: ${clientInfo}`);
+    console.log(`⚠️ Socket sendo destruído: ${clientInfo}`);
+    return originalDestroy(...args);
+  };
+
+  const originalEnd = socket.end.bind(socket);
+  socket.end = function(...args) {
+    logMessage(`⚠️ Socket sendo finalizado: ${clientInfo}`);
+    console.log(`⚠️ Socket sendo finalizado: ${clientInfo}`);
+    return originalEnd(...args);
+  };
+
+  /**
+   * Buffer da conexão.
+   *
+   * Importante:
+   * TCP não preserva mensagens.
+   *
+   * Pode acontecer:
+   *
+   * data 1 = metade da mensagem
+   * data 2 = outra metade
+   *
+   * ou:
+   *
+   * data 1 = mensagem 1 + mensagem 2
+   */
+  let buffer = '';
+
+
+  /**
+   * Fila de processamento.
+   *
+   * Isso impede que duas mensagens da mesma conexão
+   * sejam processadas simultaneamente.
+   */
+  let processing = Promise.resolve();
+
+
+  socket.on('data', (data) => {
+
+    try {
+
+      const receivedData =
+        data.toString('utf8');
+
+      logMessage(
+        `Dados brutos recebidos: ${JSON.stringify(receivedData)}`
+      );
+
+      console.log(
+        `Dados recebidos de ${clientInfo}:`,
+        JSON.stringify(receivedData)
+      );
+
+
+      /**
+       * Adiciona os dados recebidos ao buffer.
+       */
+      buffer += receivedData;
+
+
+      /**
+       * MLLP:
+       *
+       * START = 0x0B
+       * END   = 0x1C
+       * CR    = 0x0D
+       */
       const START = String.fromCharCode(0x0B);
       const END = String.fromCharCode(0x1C);
-      const CR = String.fromCharCode(0x0D);
 
-      const fullMessage = START + hl7Response + END + CR;
-      console.log('Mensagem formatada para envio:', fullMessage);
-      logMessage(`Mensagem enviada ao cliente: ${fullMessage}`);
 
-      socket.write(fullMessage, () => {
-        console.log('Mensagem enviada ao Mirth com sucesso.');
-        logMessage('Mensagem enviada ao Mirth com sucesso.');
-        socket.end();
-      });
+      /**
+       * Procura todas as mensagens completas
+       * que já estão disponíveis no buffer.
+       */
+      while (true) {
+
+        const startIndex =
+          buffer.indexOf(START);
+
+        if (startIndex === -1) {
+
+          /**
+           * Não existe início de mensagem.
+           *
+           * Mantemos apenas uma parte pequena do buffer
+           * caso tenha chegado lixo antes do START.
+           */
+          if (buffer.length > 0) {
+            logMessage(
+              'Nenhum START MLLP encontrado. Limpando buffer.'
+            );
+
+            buffer = '';
+          }
+
+          break;
+        }
+
+
+        /**
+         * Remove qualquer lixo que tenha chegado
+         * antes do START.
+         */
+        if (startIndex > 0) {
+
+          logMessage(
+            `Descartando ${startIndex} bytes antes do START MLLP.`
+          );
+
+          buffer =
+            buffer.substring(startIndex);
+        }
+
+
+        /**
+         * Procura o fim da mensagem.
+         */
+        const endIndex =
+          buffer.indexOf(END, 1);
+
+
+        /**
+         * A mensagem ainda não chegou completa.
+         *
+         * Esperamos o próximo evento "data".
+         */
+        if (endIndex === -1) {
+          break;
+        }
+
+
+        /**
+         * Extrai somente o conteúdo HL7.
+         *
+         * Remove:
+         *
+         * 0x0B
+         * 0x1C
+         * 0x0D
+         */
+        let hl7Message =
+          buffer.substring(
+            1,
+            endIndex
+          );
+
+
+        /**
+         * Remove o frame processado do buffer.
+         *
+         * +1 pelo START
+         * +1 pelo END
+         */
+        buffer =
+          buffer.substring(endIndex + 1);
+
+
+        /**
+         * Remove CR final, caso esteja presente.
+         */
+        if (
+          buffer.startsWith(
+            String.fromCharCode(0x0D)
+          )
+        ) {
+          buffer =
+            buffer.substring(1);
+        }
+
+
+        /**
+         * Normaliza os finais de linha.
+         *
+         * O hl7-standard foi configurado para \r,
+         * então mantemos \r internamente.
+         */
+        hl7Message =
+          hl7Message
+            .replace(/\r\n/g, '\r')
+            .replace(/\n/g, '\r');
+
+
+        if (!hl7Message.trim()) {
+          logMessage(
+            'Mensagem HL7 vazia ignorada.'
+          );
+
+          continue;
+        }
+
+
+        console.log(
+          'Mensagem HL7 extraída:',
+          hl7Message
+        );
+
+        logMessage(
+          `Mensagem HL7 extraída do frame: ${hl7Message}`
+        );
+
+
+        /**
+         * Coloca o processamento na fila.
+         *
+         * Assim:
+         *
+         * mensagem 1
+         *      ↓
+         * processa
+         *      ↓
+         * responde
+         *      ↓
+         * mensagem 2
+         *      ↓
+         * processa
+         *      ↓
+         * responde
+         *
+         * Mesmo que as duas cheguem juntas.
+         */
+        processing = processing
+          .then(() => {
+            // Verifica se o socket ainda está ativo antes de processar
+            if (socket.destroyed) {
+              logMessage(`Socket já foi destruído, ignorando mensagem: ${clientInfo}`);
+              return;
+            }
+            return processHL7Message(
+              socket,
+              hl7Message,
+              clientInfo
+            );
+          })
+          .catch((error) => {
+            logMessage(
+              `Erro inesperado na fila: ${error.message}`
+            );
+
+            console.error(
+              'Erro inesperado na fila:',
+              error
+            );
+          });
+      }
 
     } catch (error) {
-      logMessage(`Erro no processamento: ${error.message}`);
-      console.error('Erro no processamento:', error.message);
-      socket.write('Erro ao processar a mensagem', () => socket.end());
+
+      logMessage(
+        `Erro ao receber dados: ${error.message}`
+      );
+
+      console.error(
+        'Erro ao receber dados:',
+        error
+      );
     }
   });
 
+
+  /**
+   * NÃO fazemos socket.end() depois de responder.
+   *
+   * A conexão permanece aberta para que o Mirth
+   * possa enviar a próxima mensagem.
+   */
+
   socket.on('end', () => {
-    console.log('Cliente desconectado:', clientInfo);
-    logMessage(`Cliente desconectado: ${clientInfo}`);
+
+    console.log(
+      'Cliente desconectou (end):',
+      clientInfo
+    );
+
+    logMessage(
+      `Cliente desconectou (end): ${clientInfo}`
+    );
   });
 
+
+  socket.on('close', (hadError) => {
+
+    console.log(
+      `Socket fechado (close): ${clientInfo}, hadError: ${hadError}`
+    );
+
+    logMessage(
+      `Socket fechado (close): ${clientInfo}, hadError: ${hadError}`
+    );
+  });
+
+
   socket.on('error', (err) => {
-    console.error('Erro na conexão:', err.message);
-    logMessage(`Erro na conexão: ${err.message}`);
+
+    console.error(
+      'Erro na conexão:',
+      err.message,
+      clientInfo
+    );
+
+    logMessage(
+      `Erro na conexão: ${err.message} - ${clientInfo}`
+    );
+  });
+
+  // Evento de timeout - nunca deve ser chamado pois desabilitamos o timeout
+  socket.on('timeout', () => {
+    logMessage(`Timeout na conexão: ${clientInfo}`);
+    console.log(`Timeout na conexão: ${clientInfo}`);
+    // Não fechamos o socket aqui, apenas logamos
+  });
+
+});
+
+
+/**
+ * ============================================================
+ * START SERVER
+ * ============================================================
+ */
+
+server.listen(PORT, HOST, () => {
+
+  console.log(
+    `Servidor TCP rodando em ${HOST}:${PORT}`
+  );
+
+  logMessage(
+    `Servidor TCP iniciado em ${HOST}:${PORT}`
+  );
+
+  cleanOldLogs();
+
+  setInterval(
+    cleanOldLogs,
+    24 * 60 * 60 * 1000
+  );
+});
+
+// Tratamento de erros não capturados no servidor
+server.on('error', (err) => {
+  console.error('Erro no servidor:', err);
+  logMessage(`Erro no servidor: ${err.message}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM recebido, fechando servidor...');
+  logMessage('SIGTERM recebido, fechando servidor...');
+  
+  server.close(() => {
+    console.log('Servidor fechado.');
+    logMessage('Servidor fechado.');
+    process.exit(0);
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Servidor TCP rodando em ${HOST}:${PORT}`);
-  logMessage(`Servidor TCP iniciado em ${HOST}:${PORT}`);
-  cleanOldLogs();
-  setInterval(cleanOldLogs, 24 * 60 * 60 * 1000);
+process.on('SIGINT', () => {
+  console.log('SIGINT recebido, fechando servidor...');
+  logMessage('SIGINT recebido, fechando servidor...');
+  
+  server.close(() => {
+    console.log('Servidor fechado.');
+    logMessage('Servidor fechado.');
+    process.exit(0);
+  });
 });
