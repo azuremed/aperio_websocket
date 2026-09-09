@@ -11,6 +11,10 @@ const DOMAIN = process.env.DOMAIN;
 const TOKEN = process.env.TOKEN;
 const HOST = '0.0.0.0';
 
+// Nova porta para onde enviar o HL7 enriquecido
+const OUTPUT_PORT = process.env.OUTPUT_PORT || 44390;
+const OUTPUT_HOST = process.env.OUTPUT_HOST || '127.0.0.1';
+
 const appDir = process.pkg
   ? path.dirname(process.execPath)
   : __dirname;
@@ -73,6 +77,75 @@ const cleanOldLogs = () => {
     });
   });
 };
+
+
+/**
+ * ============================================================
+ * ENVIA HL7 PARA A PORTA DESTINO
+ * ============================================================
+ */
+
+function sendHL7ToOutput(hl7Message, clientInfo) {
+  return new Promise((resolve, reject) => {
+    const START = String.fromCharCode(0x0B);
+    const END = String.fromCharCode(0x1C);
+    const CR = String.fromCharCode(0x0D);
+
+    const fullMessage = START + hl7Message + END + CR;
+
+    logMessage(`Enviando HL7 enriquecido para ${OUTPUT_HOST}:${OUTPUT_PORT} - Cliente: ${clientInfo}`);
+    console.log(`Enviando HL7 enriquecido para ${OUTPUT_HOST}:${OUTPUT_PORT}`);
+
+    const client = new net.Socket();
+
+    // Timeout para a conexão de saída
+    const timeout = setTimeout(() => {
+      client.destroy();
+      const error = new Error('Timeout ao conectar ao destino');
+      logMessage(`Timeout ao enviar HL7: ${error.message}`);
+      reject(error);
+    }, 10000);
+
+    client.connect(OUTPUT_PORT, OUTPUT_HOST, () => {
+      clearTimeout(timeout);
+      logMessage(`Conectado ao destino ${OUTPUT_HOST}:${OUTPUT_PORT}`);
+
+      client.write(fullMessage, (error) => {
+        if (error) {
+          logMessage(`Erro ao enviar HL7 para destino: ${error.message}`);
+          reject(error);
+        } else {
+          logMessage(`HL7 enriquecido enviado com sucesso para ${OUTPUT_HOST}:${OUTPUT_PORT}`);
+          console.log(`HL7 enriquecido enviado com sucesso para ${OUTPUT_HOST}:${OUTPUT_PORT}`);
+          resolve();
+        }
+      });
+    });
+
+    client.on('error', (error) => {
+      clearTimeout(timeout);
+      logMessage(`Erro no cliente de saída: ${error.message}`);
+      reject(error);
+    });
+
+    // Aguarda resposta do destino (opcional)
+    let responseBuffer = '';
+    client.on('data', (data) => {
+      responseBuffer += data.toString('utf8');
+      logMessage(`Resposta do destino: ${responseBuffer}`);
+      
+      // Se receber um ACK, podemos considerar que foi processado
+      if (responseBuffer.includes('MSA')) {
+        client.destroy();
+      }
+    });
+
+    client.on('close', () => {
+      clearTimeout(timeout);
+      logMessage(`Conexão com destino fechada`);
+    });
+  });
+}
 
 
 /**
@@ -351,13 +424,35 @@ async function processHL7Message(socket, hl7Message, clientInfo) {
       'HL7 processado com sucesso'
     );
 
+    // ============================================================
+    // ENVIA HL7 ENRIQUECIDO PARA A PORTA DE SAÍDA
+    // ============================================================
+    try {
+      await sendHL7ToOutput(hl7Response, clientInfo);
+      logMessage('HL7 enriquecido enviado para a porta de saída com sucesso');
+    } catch (outputError) {
+      logMessage(`Erro ao enviar HL7 para porta de saída: ${outputError.message}`);
+      console.error('Erro ao enviar HL7 para porta de saída:', outputError.message);
+      // Não interrompe o fluxo, apenas loga o erro
+    }
+
+    // ============================================================
+    // ENVIA RESPOSTA AO CLIENTE (ACK)
+    // ============================================================
     const START = String.fromCharCode(0x0B);
     const END = String.fromCharCode(0x1C);
     const CR = String.fromCharCode(0x0D);
 
+    // Constroi um ACK de sucesso
+    const ackMessage = `MSH|^~\\&|LEICA|CH||${format(
+      new Date(),
+      'yyyyMMddHHmmss'
+    )}||ACK^021|${randomUUID()}|P|2.5.1\r` +
+    `MSA|AA|${hl7Message.match(/MSH\|.*\|([^\|]*?)\|/)?.[1] || 'N/A'}\r`;
+
     const fullMessage =
       START +
-      hl7Response +
+      ackMessage +
       END +
       CR;
 
@@ -787,6 +882,14 @@ server.listen(PORT, HOST, () => {
 
   logMessage(
     `Servidor TCP iniciado em ${HOST}:${PORT}`
+  );
+
+  console.log(
+    `HL7 enriquecido será enviado para ${OUTPUT_HOST}:${OUTPUT_PORT}`
+  );
+
+  logMessage(
+    `HL7 enriquecido será enviado para ${OUTPUT_HOST}:${OUTPUT_PORT}`
   );
 
   cleanOldLogs();
