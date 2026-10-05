@@ -133,7 +133,7 @@ function sendHL7ToOutput(hl7Message, clientInfo) {
     client.on('data', (data) => {
       responseBuffer += data.toString('utf8');
       logMessage(`Resposta do destino: ${responseBuffer}`);
-      
+
       // Se receber um ACK, podemos considerar que foi processado
       if (responseBuffer.includes('MSA')) {
         client.destroy();
@@ -148,11 +148,199 @@ function sendHL7ToOutput(hl7Message, clientInfo) {
 }
 
 
-/**
- * ============================================================
- * PROCESSAMENTO DO HL7
- * ============================================================
- */
+// async function fetchAndBuildHL7(hl7Message) {
+//   const now = new Date();
+//   const formattedDate = format(now, 'yyyyMMddHHmmss');
+
+//   let hl7 = new HL7(hl7Message, {
+//     fieldSeparator: '|',
+//     componentSeparator: '^',
+//     repetitionSeparator: '~',
+//     escapeCharacter: '\\',
+//     subcomponentSeparator: '&',
+//     lineEnding: '\r',
+//   });
+
+//   hl7.transform();
+
+//   logMessage('HL7 transformado com sucesso');
+
+//   let id_amostra = hl7.get('OBR.4');
+
+//   logMessage(`ID da amostra capturado: ${id_amostra}`);
+//   logMessage(`Buscando dados para amostra: ${id_amostra}`);
+
+//   const domain = DOMAIN;
+//   const token = TOKEN;
+
+//   const url =
+//     `http://localhost:8000/api/aperio/consulta/` +
+//     `${domain}/${token}/${id_amostra}`;
+
+//   logMessage(`Requisitando o endpoint: ${url}`);
+//   console.log(`Requisitando o endpoint: ${url}`);
+
+//   const response = await fetch(url);
+//   const responseText = await response.text();
+
+//   if (!response.ok) {
+//     logMessage(
+//       `API retornou erro: ${response.status} - ${response.statusText}`
+//     );
+
+//     return {
+//       success: false,
+//       error: `Erro na API externa: ${response.status} - ${response.statusText}`
+//     };
+//   }
+
+//   logMessage(`Status da resposta: ${response.status}`);
+//   logMessage(`Conteúdo bruto recebido: ${responseText}`);
+//   console.log(`Conteúdo bruto recebido: ${responseText}`);
+
+//   const result = JSON.parse(responseText);
+//   const record = result;
+
+//   if (!record) {
+//     return {
+//       success: false,
+//       error: 'Nenhum registro encontrado para o ID fornecido.'
+//     };
+//   }
+
+//   logMessage('Dados recuperados com sucesso!');
+
+//   const patientName = record.pac_nome?.trim() ?? '';
+//   const patientNameSplited = patientName.split(' ');
+
+//   const doctorName = record.psv_nome?.trim() ?? '';
+//   const doctorNameSplited = doctorName.split(' ');
+
+//   const doctorCRM =
+//     (record.psv_uf || '') +
+//     (record.psv_crm || '');
+
+//   const patientGender = record.pac_sexo ?? 'U';
+
+//   for (const segment of hl7.getSegments()) {
+//     if (
+//       [
+//         'ORC',
+//         'OBR',
+//         'OBX',
+//         'PID',
+//         'PV1',
+//         'SAC',
+//         'SPM',
+//         'ZBL'
+//       ].includes(segment.type)
+//     ) {
+//       hl7.deleteSegment(segment);
+//     }
+//   }
+
+//   logMessage('Segmentos deletados');
+
+//   hl7.set('MSH.7.1', formattedDate);
+//   hl7.set('MSH.9.1', 'OML');
+//   hl7.set('MSH.9.2', 'O21');
+//   hl7.set('MSH.10', randomUUID());
+
+//   hl7.createSegment('PID');
+//   hl7.createSegment('PV1');
+//   hl7.createSegment('ORC');
+//   hl7.createSegment('SAC');
+//   hl7.createSegment('SPM');
+//   hl7.createSegment('ZBL'); // Segmento de Bloco exigido pela Leica
+//   hl7.createSegment('OBR');
+
+//   hl7.set(
+//     'PID.3.1',
+//     record.pac_reg?.toString() ?? ''
+//   );
+
+//   hl7.set(
+//     'PID.5.1',
+//     patientNameSplited[patientNameSplited.length - 1] ?? ''
+//   );
+
+//   hl7.set(
+//     'PID.5.2',
+//     patientNameSplited[0] ?? ''
+//   );
+
+//   hl7.set(
+//     'PID.7',
+//     record.pac_nasc
+//       ? format(new Date(record.pac_nasc), 'yyyyMMdd')
+//       : ''
+//   );
+
+//   hl7.set('PID.8', patientGender);
+//   hl7.set('PID.23', 'U');
+
+//   hl7.set('PV1.7.1', doctorCRM ?? '');
+
+//   hl7.set(
+//     'PV1.7.2',
+//     doctorNameSplited[doctorNameSplited.length - 1] ?? ''
+//   );
+
+//   hl7.set(
+//     'PV1.7.3',
+//     doctorNameSplited[0] ?? ''
+//   );
+
+//   hl7.set('PV1.7.6', 'Dr');
+
+//   hl7.set('ORC.1', 'NW');
+
+//   // 1. SAC.1 -> Identificador do Caso
+//   hl7.set(
+//     'SAC.1',
+//     record.osm_num?.toString() ?? ''
+//   );
+
+//   // 2. SPM.2 -> Identificador do Espécime
+//   hl7.set(
+//     'SPM.2.1',
+//     record.smm_cod_amostra?.toString() ?? ''
+//   );
+
+//   hl7.set(
+//     'SPM.17.1',
+//     record.smm_dthr_coleta
+//       ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
+//       : ''
+//   );
+
+//   hl7.set(
+//     'SPM.18.1',
+//     record.smm_dthr_coleta
+//       ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
+//       : ''
+//   );
+
+//   // 3. ZBL.1 -> Identificador do Bloco (Adicionando sufixo para diferenciar do espécime)
+//   hl7.set(
+//     'ZBL.1',
+//     `${record.smm_cod_amostra}-B1`
+//   );
+
+//   hl7.set('OBR.1', 1);
+
+//   // 4. OBR.4 -> Identificador da Lâmina (Barcode final exclusivo)
+//   hl7.set(
+//     'OBR.4',
+//     id_amostra?.toString() ?? `${record.smm_cod_amostra}-B1-1`
+//   );
+
+//   const responseHl7 = await hl7.build();
+
+//   logMessage('HL7 montado com sucesso');
+
+//   return responseHl7;
+// }
 
 async function fetchAndBuildHL7(hl7Message) {
   const now = new Date();
@@ -174,14 +362,13 @@ async function fetchAndBuildHL7(hl7Message) {
   let id_amostra = hl7.get('OBR.4');
 
   logMessage(`ID da amostra capturado: ${id_amostra}`);
-
   logMessage(`Buscando dados para amostra: ${id_amostra}`);
 
   const domain = DOMAIN;
   const token = TOKEN;
 
   const url =
-    `https://api-externa.klingo.app/api/aperio/consulta/` +
+    `http://localhost:8000/api/aperio/consulta/` +
     `${domain}/${token}/${id_amostra}`;
 
   logMessage(`Requisitando o endpoint: ${url}`);
@@ -189,7 +376,6 @@ async function fetchAndBuildHL7(hl7Message) {
 
   const response = await fetch(url);
   const responseText = await response.text();
-
 
   if (!response.ok) {
     logMessage(
@@ -204,7 +390,6 @@ async function fetchAndBuildHL7(hl7Message) {
 
   logMessage(`Status da resposta: ${response.status}`);
   logMessage(`Conteúdo bruto recebido: ${responseText}`);
-
   console.log(`Conteúdo bruto recebido: ${responseText}`);
 
   const result = JSON.parse(responseText);
@@ -225,9 +410,7 @@ async function fetchAndBuildHL7(hl7Message) {
   const doctorName = record.psv_nome?.trim() ?? '';
   const doctorNameSplited = doctorName.split(' ');
 
-  const doctorCRM =
-    (record.psv_uf || '') +
-    (record.psv_crm || '');
+  const doctorCRM = (record.psv_uf || '') + (record.psv_crm || '');
 
   const patientGender = record.pac_sexo ?? 'U';
 
@@ -240,7 +423,8 @@ async function fetchAndBuildHL7(hl7Message) {
         'PID',
         'PV1',
         'SAC',
-        'SPM'
+        'SPM',
+        'ZBL'
       ].includes(segment.type)
     ) {
       hl7.deleteSegment(segment);
@@ -259,6 +443,7 @@ async function fetchAndBuildHL7(hl7Message) {
   hl7.createSegment('ORC');
   hl7.createSegment('SAC');
   hl7.createSegment('SPM');
+  hl7.createSegment('ZBL'); // Segmento de Bloco exigido pela Leica
   hl7.createSegment('OBR');
 
   hl7.set(
@@ -302,11 +487,13 @@ async function fetchAndBuildHL7(hl7Message) {
 
   hl7.set('ORC.1', 'NW');
 
+  // 1. SAC.1 -> Identificador do Caso
   hl7.set(
     'SAC.1',
-    record.smm_cod_amostra?.toString() ?? ''
+    record.osm_num?.toString() ?? ''
   );
 
+  // 2. SPM.2 -> Identificador do Espécime
   hl7.set(
     'SPM.2.1',
     record.smm_cod_amostra?.toString() ?? ''
@@ -315,29 +502,24 @@ async function fetchAndBuildHL7(hl7Message) {
   hl7.set(
     'SPM.17.1',
     record.smm_dthr_coleta
-      ? format(
-        new Date(record.smm_dthr_coleta),
-        'yyyyMMddHHmmss'
-      )
+      ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
       : ''
   );
 
   hl7.set(
     'SPM.18.1',
     record.smm_dthr_coleta
-      ? format(
-        new Date(record.smm_dthr_coleta),
-        'yyyyMMddHHmmss'
-      )
+      ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
       : ''
   );
 
+  // 3. ZBL.1 -> Identificador do Bloco
+  hl7.set('ZBL.1', record.zbl);
+
   hl7.set('OBR.1', 1);
 
-  hl7.set(
-    'OBR.4',
-    record.smm_cod_amostra?.toString() ?? ''
-  );
+  // 4. OBR.4 -> Identificador da Lâmina
+  hl7.set('OBR.4', record.smm_cod_amostra);
 
   const responseHl7 = await hl7.build();
 
@@ -345,7 +527,6 @@ async function fetchAndBuildHL7(hl7Message) {
 
   return responseHl7;
 }
-
 
 /**
  * ============================================================
@@ -388,7 +569,7 @@ function sendResponse(socket, message) {
         reject(error);
         return;
       }
-      
+
       logMessage('Resposta enviada com sucesso');
       resolve();
     });
@@ -448,7 +629,7 @@ async function processHL7Message(socket, hl7Message, clientInfo) {
       new Date(),
       'yyyyMMddHHmmss'
     )}||ACK^021|${randomUUID()}|P|2.5.1\r` +
-    `MSA|AA|${hl7Message.match(/MSH\|.*\|([^\|]*?)\|/)?.[1] || 'N/A'}\r`;
+      `MSA|AA|${hl7Message.match(/MSH\|.*\|([^\|]*?)\|/)?.[1] || 'N/A'}\r`;
 
     const fullMessage =
       START +
@@ -521,17 +702,17 @@ async function processHL7Message(socket, hl7Message, clientInfo) {
  */
 
 const server = net.createServer((socket) => {
-  
+
   // ============================================================
   // CONFIGURAÇÕES CRÍTICAS PARA MANTER A CONEXÃO ABERTA
   // ============================================================
-  
+
   // Mantém a conexão ativa mesmo com inatividade
   socket.setKeepAlive(true, 30000); // 30 segundos de keepalive
-  
+
   // Desabilita timeout automático do socket
   socket.setTimeout(0);
-  
+
   // ============================================================
   // FIM DAS CONFIGURAÇÕES
   // ============================================================
@@ -550,14 +731,14 @@ const server = net.createServer((socket) => {
 
   // DEBUG: Monitorar quando o socket é destruído
   const originalDestroy = socket.destroy.bind(socket);
-  socket.destroy = function(...args) {
+  socket.destroy = function (...args) {
     logMessage(`⚠️ Socket sendo destruído: ${clientInfo}`);
     console.log(`⚠️ Socket sendo destruído: ${clientInfo}`);
     return originalDestroy(...args);
   };
 
   const originalEnd = socket.end.bind(socket);
-  socket.end = function(...args) {
+  socket.end = function (...args) {
     logMessage(`⚠️ Socket sendo finalizado: ${clientInfo}`);
     console.log(`⚠️ Socket sendo finalizado: ${clientInfo}`);
     return originalEnd(...args);
@@ -910,7 +1091,7 @@ server.on('error', (err) => {
 process.on('SIGTERM', () => {
   console.log('SIGTERM recebido, fechando servidor...');
   logMessage('SIGTERM recebido, fechando servidor...');
-  
+
   server.close(() => {
     console.log('Servidor fechado.');
     logMessage('Servidor fechado.');
@@ -921,7 +1102,7 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('SIGINT recebido, fechando servidor...');
   logMessage('SIGINT recebido, fechando servidor...');
-  
+
   server.close(() => {
     console.log('Servidor fechado.');
     logMessage('Servidor fechado.');
