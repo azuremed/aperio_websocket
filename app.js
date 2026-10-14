@@ -361,20 +361,17 @@ async function processHL7Message(socket, hl7Message, clientInfo) {
     console.log('Mensagem HL7 recebida:', hl7Message);
 
     // ============================================================
-    // VALIDAÇÃO: Ignorar mensagens de retorno do Mirth (ex: OUL^R21, ACK, etc.)
+    // COLOQUE AQUI: Ignorar apenas se for o relatório de retorno com URLs do Mirth
     // ============================================================
-    const mshSegment = hl7Message.split('\r')[0];
-    const messageTypeMatch = mshSegment?.match(/MSH\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|([^|^~]*[\^]?[^|]*)/);
-    const messageType = messageTypeMatch ? messageTypeMatch[1] : '';
-
-    // Se o tipo de mensagem for OUL^R21 ou começar com ACK, tratamos apenas como retorno/confirmação
-    if (messageType.includes('OUL^R21') || messageType.startsWith('ACK')) {
-      logMessage(`Mensagem de retorno/confirmação ignorada (${messageType}). Nenhuma ação necessária.`);
-      console.log(`Mensagem de retorno/confirmação ignorada (${messageType}).`);
+    if (hl7Message.includes('OBX|') && hl7Message.includes('|URL|')) {
+      logMessage(`Mensagem de retorno com URLs do Mirth detectada e ignorada.`);
+      console.log(`Mensagem de retorno com URLs do Mirth ignorada.`);
       return;
     }
+    // ============================================================
 
-    const hl7Response = await fetchAndBuildHL7(hl7Message);
+    const hl7Response =
+      await fetchAndBuildHL7(hl7Message);
 
     if (hl7Response && hl7Response.success === false) {
       throw new Error(hl7Response.error);
