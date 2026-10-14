@@ -363,7 +363,7 @@ async function processHL7Message(socket, hl7Message, clientInfo) {
     // ============================================================
     // COLOQUE AQUI: Ignorar apenas se for o relatório de retorno com URLs do Mirth
     // ============================================================
-    if (hl7Message.includes('OBX|') && hl7Message.includes('|URL|')) {
+    if (hl7Message.includes('PID|')) {
       logMessage(`Mensagem de retorno com URLs do Mirth detectada e ignorada.`);
       console.log(`Mensagem de retorno com URLs do Mirth ignorada.`);
       return;
