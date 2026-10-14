@@ -39,6 +39,6 @@ Executar o comando abaixo:
 
 ## Gerando o .exe
 ex.: rodar comando para gerar o executavel 
-pkg unificado.js --target node18-win-x64 --output fuji.exe
+pkg app.js --target node18-win-x64 --output aperio.exe
 
 ### Pronto!

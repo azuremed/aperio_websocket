@@ -368,7 +368,7 @@ async function fetchAndBuildHL7(hl7Message) {
   const token = TOKEN;
 
   const url =
-    `http://localhost:8000/api/aperio/consulta/` +
+    `https://api-externa.klingo.app/api/aperio/consulta/` +
     `${domain}/${token}/${id_amostra}`;
 
   logMessage(`Requisitando o endpoint: ${url}`);
@@ -392,8 +392,7 @@ async function fetchAndBuildHL7(hl7Message) {
   logMessage(`Conteúdo bruto recebido: ${responseText}`);
   console.log(`Conteúdo bruto recebido: ${responseText}`);
 
-  const result = JSON.parse(responseText);
-  const record = result;
+  const record = JSON.parse(responseText);
 
   if (!record) {
     return {
@@ -406,120 +405,137 @@ async function fetchAndBuildHL7(hl7Message) {
 
   const patientName = record.pac_nome?.trim() ?? '';
   const patientNameSplited = patientName.split(' ');
+  const lastName = patientNameSplited.length > 1 ? patientNameSplited.pop() : '';
+  const firstName = patientNameSplited.join(' ');
 
   const doctorName = record.psv_nome?.trim() ?? '';
   const doctorNameSplited = doctorName.split(' ');
+  const docLastName = doctorNameSplited.length > 1 ? doctorNameSplited.pop() : '';
+  const docFirstName = doctorNameSplited.join(' ');
 
   const doctorCRM = (record.psv_uf || '') + (record.psv_crm || '');
-
   const patientGender = record.pac_sexo ?? 'U';
 
+  const dthrColeta = record.smm_dthr_coleta
+    ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
+    : formattedDate;
+
+  // Deleta segmentos antigos para reconstrução limpa
+  const segmentsToDelete = ['ORC', 'OBR', 'OBX', 'PID', 'PV1', 'SAC', 'SPM', 'ZBL', 'NTE'];
   for (const segment of hl7.getSegments()) {
-    if (
-      [
-        'ORC',
-        'OBR',
-        'OBX',
-        'PID',
-        'PV1',
-        'SAC',
-        'SPM',
-        'ZBL'
-      ].includes(segment.type)
-    ) {
+    if (segmentsToDelete.includes(segment.type)) {
       hl7.deleteSegment(segment);
     }
   }
 
-  logMessage('Segmentos deletados');
+  logMessage('Segmentos antigos removidos');
 
+  // Configuração MSH
+  hl7.set('MSH.3', record.sending_app || 'LIMS');
+  hl7.set('MSH.5', record.receiving_app || 'LEICA');
+  hl7.set('MSH.6', record.receiving_facility || 'CH');
   hl7.set('MSH.7.1', formattedDate);
+  hl7.set('MSH.8', record.security || 'Default');
   hl7.set('MSH.9.1', 'OML');
-  hl7.set('MSH.9.2', 'O21');
+  hl7.set('MSH.9.2', '021');
   hl7.set('MSH.10', randomUUID());
+  hl7.set('MSH.11', 'P');
+  hl7.set('MSH.12', '2.5.1');
 
+  // 1. PID
   hl7.createSegment('PID');
-  hl7.createSegment('PV1');
-  hl7.createSegment('ORC');
-  hl7.createSegment('SAC');
-  hl7.createSegment('SPM');
-  hl7.createSegment('ZBL'); // Segmento de Bloco exigido pela Leica
-  hl7.createSegment('OBR');
-
-  hl7.set(
-    'PID.3.1',
-    record.pac_reg?.toString() ?? ''
-  );
-
-  hl7.set(
-    'PID.5.1',
-    patientNameSplited[patientNameSplited.length - 1] ?? ''
-  );
-
-  hl7.set(
-    'PID.5.2',
-    patientNameSplited[0] ?? ''
-  );
-
-  hl7.set(
-    'PID.7',
-    record.pac_nasc
-      ? format(new Date(record.pac_nasc), 'yyyyMMdd')
-      : ''
-  );
-
+  hl7.set('PID.3.1', `${record.pac_reg ?? ''}^^^^MR`);
+  hl7.set('PID.5.1', lastName);
+  hl7.set('PID.5.2', firstName);
+  hl7.set('PID.7', record.pac_nasc ? format(new Date(record.pac_nasc), 'yyyyMMdd') : '');
   hl7.set('PID.8', patientGender);
   hl7.set('PID.23', 'U');
 
-  hl7.set('PV1.7.1', doctorCRM ?? '');
+  // 2. PV1
+  hl7.createSegment('PV1');
+  hl7.set('PV1.3.1', record.pv1_location ?? '^^^NYP');
+  if (doctorCRM || docLastName || docFirstName) {
+    hl7.set('PV1.7.1', doctorCRM);
+    hl7.set('PV1.7.2', docLastName);
+    hl7.set('PV1.7.3', docFirstName);
+    hl7.set('PV1.7.6', 'Dr');
+  }
 
-  hl7.set(
-    'PV1.7.2',
-    doctorNameSplited[doctorNameSplited.length - 1] ?? ''
-  );
-
-  hl7.set(
-    'PV1.7.3',
-    doctorNameSplited[0] ?? ''
-  );
-
-  hl7.set('PV1.7.6', 'Dr');
-
+  // 3. ORC
+  hl7.createSegment('ORC');
   hl7.set('ORC.1', 'NW');
 
-  // 1. SAC.1 -> Identificador do Caso
-  hl7.set(
-    'SAC.1',
-    record.osm_num?.toString() ?? ''
-  );
+  // 4. SAC
+  hl7.createSegment('SAC');
+  hl7.set('SAC.1', record.osm_num?.toString() ?? record.case_id ?? '');
 
-  // 2. SPM.2 -> Identificador do Espécime
-  hl7.set(
-    'SPM.2.1',
-    record.smm_cod_amostra?.toString() ?? ''
-  );
+  // 5. NTE (Notas do Paciente / Diagnóstico)
+  if (record.patient_notes && Array.isArray(record.patient_notes)) {
+    record.patient_notes.forEach((note, idx) => {
+      const nteSeg = hl7.createSegment('NTE');
+      nteSeg.set('NTE.1', idx + 1);
+      nteSeg.set('NTE.3', note.text || note);
+      nteSeg.set('NTE.4', note.type || 'C');
+    });
+  }
 
-  hl7.set(
-    'SPM.17.1',
-    record.smm_dthr_coleta
-      ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
-      : ''
-  );
+  // 6. SPM
+  const spmSeg = hl7.createSegment('SPM');
+  const specId = record.smm_cod_amostra?.toString() ?? record.specimen_id ?? '';
+  spmSeg.set('SPM.1', '1');
+  spmSeg.set('SPM.2.1', specId);
+  spmSeg.set('SPM.7.1', record.specimen_type || 'Laparoscopic');
+  spmSeg.set('SPM.8.1', record.organ_site || 'Liver');
+  spmSeg.set('SPM.17.1', dthrColeta);
+  spmSeg.set('SPM.18.1', dthrColeta);
 
-  hl7.set(
-    'SPM.18.1',
-    record.smm_dthr_coleta
-      ? format(new Date(record.smm_dthr_coleta), 'yyyyMMddHHmmss')
-      : ''
-  );
+  if (record.specimen_note) {
+    const nteSpm = hl7.createSegment('NTE');
+    nteSpm.set('NTE.1', '1');
+    nteSpm.set('NTE.3', record.specimen_note);
+    nteSpm.set('NTE.4', 'C');
+  }
 
-  // 3. ZBL.1 -> Identificador do Bloco
-  hl7.set('ZBL.1', record.zbl);
+  // 7. ZBL (Bloco)
+  const zblSeg = hl7.createSegment('ZBL');
+  const blockId = record.zbl || `${specId}.A`;
+  zblSeg.set('ZBL.1', blockId);
 
-  hl7.set('OBR.1', 1);
+  // 8. OBR (Lâmina)
+  const obrSeg = hl7.createSegment('OBR');
+  const slideId = id_amostra?.toString() ?? `${blockId}.1`;
+  obrSeg.set('OBR.1', '1');
+  obrSeg.set('OBR.4.1', slideId);
 
-  // 4. OBR.4 -> Identificador da Lâmina
-  hl7.set('OBR.4', record.smm_cod_amostra);
+  // 9. OBX (Atributos da Lâmina)
+  const obxList = record.obx_fields || [
+    { type: 'TX', key: 'MAG', val: record.magnification || '40' },
+    { type: 'TX', key: 'STN', val: record.stain || 'PAS^Periodic Acid Stain' },
+    { type: 'TX', key: 'Custom^Case', subKey: 'PatientHobbies', val: record.patient_hobbies || '' },
+    { type: 'TX', key: 'Custom^Specimen', subKey: 'RiskCode', val: record.risk_code || '' },
+    { type: 'TX', key: 'Custom^Block', subKey: 'Block_SlideNumber', val: record.block_slide_num || '' },
+    { type: 'TX', key: 'Custom^Slide', subKey: 'ScarType', val: record.scar_type || '' },
+  ];
+
+  let obxSeq = 1;
+  obxList.forEach((obx) => {
+    if (!obx.val) return;
+    const obxSeg = hl7.createSegment('OBX');
+    obxSeg.set('OBX.1', obxSeq++);
+    obxSeg.set('OBX.2', obx.type || 'TX');
+    obxSeg.set('OBX.3.1', obx.key);
+    if (obx.subKey) {
+      obxSeg.set('OBX.4', obx.subKey);
+    }
+    obxSeg.set('OBX.5', obx.val);
+  });
+
+  if (record.slide_note) {
+    const nteObr = hl7.createSegment('NTE');
+    nteObr.set('NTE.1', '1');
+    nteObr.set('NTE.3', record.slide_note);
+    nteObr.set('NTE.4', 'C');
+  }
 
   const responseHl7 = await hl7.build();
 

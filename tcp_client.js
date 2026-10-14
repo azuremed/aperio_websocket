@@ -1,38 +1,108 @@
-const HL7 = require('hl7-standard/src/api');
-const net = require('net');
-require('dotenv').config(); 
+socket.on('data', (data) => {
+  try {
+    const receivedData = data.toString('utf8');
 
-// Texto a ser enviado
-const message = `MSH|^~\\&|ESM||LIS||20240816115408871||OUL^R21|97e24704-672c-4abe-89f2-829faa6e8eb7|P|2.5.1\nORC|RE\nOBR||||01332467610\nOBX|1|ST|URL|SLIDE|https://patologiadigital.com.br/view/v2/LApi.Slide/1800179333010B||||||F\nOBX|3|ST|DATE|SCANNED|20240816114404000||||||F\nOBX|4|ST|MAG|SCAN|40||||||F\nOBX|5|ST|SCANSCOPEID||SS12175||||||F`;
+    logMessage(`Dados brutos recebidos: ${JSON.stringify(receivedData)}`);
+    console.log(`Dados recebidos de ${clientInfo}:`, JSON.stringify(receivedData));
 
-const options = {
-  host: '0.0.0.0',
-  port: process.env.WEBSOCKET_PORT
-};
+    buffer += receivedData;
 
+    const START = String.fromCharCode(0x0B);
+    const END   = String.fromCharCode(0x1C);
+    const CR    = String.fromCharCode(0x0D);
 
-// Cria um cliente TCP
-const client = new net.Socket();
+    // ============================================================
+    // MODO 1 — MLLP padrão (com 0x0B ... 0x1C 0x0D)
+    // ============================================================
+    while (true) {
+      const startIndex = buffer.indexOf(START);
 
-// Conecta ao servidor
-client.connect(options, () => {
-  console.log('Conectado ao servidor');
-  client.write(message); // Envia a mensagem
-  console.log('Mensagem enviada');
-});
+      if (startIndex === -1) {
+        // ⬇️ FALLBACK: se não tem MLLP, tenta tratar como mensagem "crua"
+        //    que começa com "MSH|"
+        const mshIndex = buffer.indexOf('MSH|');
+        if (mshIndex !== -1) {
+          // Procura fim de segmento (\r ou \n)
+          const hasCR = buffer.includes(CR);
+          const hasLF = buffer.includes('\n');
 
-// Lida com dados recebidos do servidor
-client.on('data', (data) => {
-  console.log('Resposta do servidor:', data.toString());
-  client.destroy(); // Fecha a conexão após receber a resposta
-});
+          if (hasCR || hasLF) {
+            logMessage('Fallback: mensagem sem MLLP detectada.');
 
-// Lida com o encerramento da conexão
-client.on('close', () => {
-  console.log('Conexão encerrada');
-});
+            let raw = buffer.substring(mshIndex);
+            raw = raw.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
 
-// Lida com erros
-client.on('error', (err) => {
-  console.error('Erro:', err.message);
+            // Se termina com \r, removemos o último (só o separador)
+            if (raw.endsWith('\r')) raw = raw.slice(0, -1);
+
+            buffer = '';
+
+            if (raw.trim()) {
+              console.log('Mensagem HL7 (fallback) extraída:', raw);
+              logMessage(`Mensagem HL7 (fallback) extraída: ${raw}`);
+
+              processing = processing
+                .then(() => {
+                  if (socket.destroyed) {
+                    logMessage(`Socket destruído, ignorando: ${clientInfo}`);
+                    return;
+                  }
+                  return processHL7Message(socket, raw, clientInfo);
+                })
+                .catch((error) => {
+                  logMessage(`Erro inesperado na fila: ${error.message}`);
+                  console.error('Erro inesperado na fila:', error);
+                });
+            }
+          }
+        } else if (buffer.length > 0) {
+          // Nada útil no buffer → limpa
+          logMessage('Nenhum START MLLP nem MSH encontrado. Limpando buffer.');
+          buffer = '';
+        }
+
+        break;
+      }
+
+      // Remove lixo antes do START
+      if (startIndex > 0) {
+        logMessage(`Descartando ${startIndex} bytes antes do START MLLP.`);
+        buffer = buffer.substring(startIndex);
+      }
+
+      const endIndex = buffer.indexOf(END, 1);
+      if (endIndex === -1) break; // mensagem incompleta, aguarda próximo data
+
+      let hl7Message = buffer.substring(1, endIndex);
+      buffer = buffer.substring(endIndex + 1);
+
+      if (buffer.startsWith(CR)) buffer = buffer.substring(1);
+
+      hl7Message = hl7Message.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+
+      if (!hl7Message.trim()) {
+        logMessage('Mensagem HL7 vazia ignorada.');
+        continue;
+      }
+
+      console.log('Mensagem HL7 extraída:', hl7Message);
+      logMessage(`Mensagem HL7 extraída do frame: ${hl7Message}`);
+
+      processing = processing
+        .then(() => {
+          if (socket.destroyed) {
+            logMessage(`Socket já foi destruído, ignorando: ${clientInfo}`);
+            return;
+          }
+          return processHL7Message(socket, hl7Message, clientInfo);
+        })
+        .catch((error) => {
+          logMessage(`Erro inesperado na fila: ${error.message}`);
+          console.error('Erro inesperado na fila:', error);
+        });
+    }
+  } catch (error) {
+    logMessage(`Erro ao receber dados: ${error.message}`);
+    console.error('Erro ao receber dados:', error);
+  }
 });
